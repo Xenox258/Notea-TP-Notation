@@ -73,6 +73,8 @@ object ProjectStore {
             pairings = json.optJSONObject("pairings").toStringMap(),
             gridKind = json.optString("gridKind", GridKind.EP_2I2D),
             gridTemplateBase64 = json.optString("gridTemplateBase64"),
+            gridLevelColumns = json.optJSONObject("gridLevelColumns").toIntStringMap(),
+            grandOralProfileGuide = json.optJSONArray("grandOralProfileGuide")?.toProfileGuide(),
         )
     }
 
@@ -97,6 +99,22 @@ object ProjectStore {
             .put("pairings", JSONObject(pairings as Map<*, *>))
             .put("gridKind", gridKind)
             .put("gridTemplateBase64", gridTemplateBase64)
+            .put("gridLevelColumns", JSONObject(gridLevelColumns.mapKeys { it.key.toString() } as Map<*, *>))
+            .put("grandOralProfileGuide", grandOralProfileGuide?.let { guide ->
+                if (guide.rawFallback != null) {
+                    JSONArray(listOf(JSONObject().put("rawFallback", guide.rawFallback)))
+                } else {
+                    JSONArray(guide.rows.map { row ->
+                        JSONObject()
+                            .put("oralQuality", row.oralQuality.code)
+                            .put("continuousSpeech", row.continuousSpeech.code)
+                            .put("knowledgeQuality", row.knowledgeQuality.code)
+                            .put("interactionQuality", row.interactionQuality.code)
+                            .put("argumentationQuality", row.argumentationQuality.code)
+                            .put("possibleGrade", row.possibleGrade)
+                    })
+                }
+            } ?: JSONArray())
     }
 
     private fun JSONObject?.toGradeMap(): MutableMap<String, MutableMap<String, Int>> {
@@ -130,5 +148,27 @@ object ProjectStore {
     private inline fun <T> JSONArray?.toList(build: JSONObject.() -> T): List<T> {
         if (this == null) return emptyList()
         return (0 until length()).map { getJSONObject(it).build() }
+    }
+
+    private fun JSONArray?.toProfileGuide(): GrandOralProfileGuide? {
+        if (this == null || length() == 0) return null
+        // Détecter si c'est un fallback brut (1 élément avec clé "rawFallback")
+        if (length() == 1) {
+            val first = getJSONObject(0)
+            val raw = first.optString("rawFallback", "")
+            if (raw.isNotBlank()) return GrandOralProfileGuide(emptyList(), rawFallback = raw)
+        }
+        val rows = (0 until length()).map { index ->
+            val obj = getJSONObject(index)
+            GrandOralProfileRow(
+                oralQuality = ProfileLevel.fromCode(obj.optString("oralQuality", "?")),
+                continuousSpeech = ProfileLevel.fromCode(obj.optString("continuousSpeech", "?")),
+                knowledgeQuality = ProfileLevel.fromCode(obj.optString("knowledgeQuality", "?")),
+                interactionQuality = ProfileLevel.fromCode(obj.optString("interactionQuality", "?")),
+                argumentationQuality = ProfileLevel.fromCode(obj.optString("argumentationQuality", "?")),
+                possibleGrade = obj.optString("possibleGrade", ""),
+            )
+        }
+        return GrandOralProfileGuide(rows)
     }
 }

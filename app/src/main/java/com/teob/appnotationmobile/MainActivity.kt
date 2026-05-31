@@ -70,7 +70,8 @@ class MainActivity : Activity() {
                     val bytes = contentResolver.openInputStream(uri).useRequired { it.readBytes() }
                     applyGrid(bytes)
                     ImportCacheStore.save(this, ImportCacheKind.GRIDS, displayName(uri), bytes)
-                    persistAndShowSetup("Grille de notation importée")
+                    val typeLabel = EvaluationSheetType.fromKind(project.gridKind).label
+                    persistAndShowSetup("Grille $typeLabel importée")
                 }
 
                 REQUEST_EXPORT_GRID -> {
@@ -681,8 +682,13 @@ class MainActivity : Activity() {
     }
 
     private fun importCachedGrid(cached: CachedImport) {
-        applyGrid(Base64.decode(cached.contentBase64, Base64.DEFAULT))
-        persistAndShowSetup("Grille chargée depuis le cache")
+        try {
+            applyGrid(Base64.decode(cached.contentBase64, Base64.DEFAULT))
+            persistAndShowSetup("Grille chargée depuis le cache")
+        } catch (error: Exception) {
+            toast("Le cache est obsolète : ${error.message}. Réimporte le fichier.")
+            pickFile(REQUEST_GRID, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        }
     }
 
     private fun applyStudentList(bytes: ByteArray) {
@@ -692,9 +698,15 @@ class MainActivity : Activity() {
 
     private fun applyGrid(bytes: ByteArray) {
         val grid = XlsxGridParser.parse(bytes)
+        if (grid.criteria.isEmpty()) {
+            throw IllegalArgumentException("Aucun critère reconnu dans cette grille.")
+        }
         project.criteria = grid.criteria
         project.gridKind = grid.kind
+        project.gridLevelColumns = grid.levelColumns
+        project.grandOralProfileGuide = grid.profileGuide
         project.gridTemplateBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        android.util.Log.d("InfoDialog", "applyGrid: kind=${grid.kind}, profileGuide=${grid.profileGuide != null}, rows=${grid.profileGuide?.rows?.size}, fallback=${grid.profileGuide?.rawFallback?.length}")
     }
 
     private fun displayName(uri: Uri): String {
@@ -758,6 +770,7 @@ class MainActivity : Activity() {
     }
 
     private fun hasDescriptors(): Boolean {
+        if (project.gridKind == GridKind.GRAND_ORAL_2I2D && project.grandOralProfileGuide != null) return true
         return project.criteria.any { it.descriptors.isNotEmpty() }
     }
 
@@ -796,15 +809,26 @@ class MainActivity : Activity() {
         }
     }
 
-    // Dialogue de consultation : il garde les descripteurs accessibles sans alourdir la notation.
+    // Dialogue de consultation : descripteurs de compétences ou profil notes Grand Oral.
     private fun showCompetencyDescriptions() {
         if (!hasDescriptors()) {
             toast("Aucun descripteur trouvé dans la grille.")
             return
         }
+        val gridKind = project.gridKind
+        val guide = project.grandOralProfileGuide
+        val isGrandOral = gridKind == GridKind.GRAND_ORAL_2I2D && guide != null
+
+        android.util.Log.d("InfoDialog", "gridKind=$gridKind")
+        android.util.Log.d("InfoDialog", "hasGrandOralProfileGuide=${guide != null}")
+        android.util.Log.d("InfoDialog", "profileRows=${guide?.rows?.size}")
+        android.util.Log.d("InfoDialog", "rawFallbackLength=${guide?.rawFallback?.length}")
+        android.util.Log.d("InfoDialog", "isGrandOral=$isGrandOral")
+        android.util.Log.d("InfoDialog", "criteriaCount=${project.criteria.size}")
+
         val dialog = AlertDialog.Builder(this)
             .setCustomTitle(TextView(this).apply {
-                text = "Descripteurs des compétences"
+                text = if (isGrandOral) "Profil notes — Grand oral" else "Descripteurs des compétences"
                 textSize = 20f
                 setTextColor(ui.text)
                 setTypeface(null, android.graphics.Typeface.BOLD)
@@ -817,16 +841,20 @@ class MainActivity : Activity() {
                     orientation = LinearLayout.VERTICAL
                     val padding = dp(18)
                     setPadding(padding, dp(12), padding, dp(4))
-                    groupedCriteria().forEach { (skill, criteria) ->
-                        addView(TextView(this@MainActivity).apply {
-                            text = skill
-                            textSize = 18f
-                            setTextColor(ui.primary)
-                            setTypeface(null, android.graphics.Typeface.BOLD)
-                            setPadding(0, dp(10), 0, dp(6))
-                        })
-                        criteria.forEach { criterion ->
-                            if (criterion.descriptors.isNotEmpty()) addView(descriptorBlock(criterion))
+                    if (isGrandOral) {
+                        addProfileGuideView(this)
+                    } else {
+                        groupedCriteria().forEach { (skill, criteria) ->
+                            addView(TextView(this@MainActivity).apply {
+                                text = skill
+                                textSize = 18f
+                                setTextColor(ui.primary)
+                                setTypeface(null, android.graphics.Typeface.BOLD)
+                                setPadding(0, dp(10), 0, dp(6))
+                            })
+                            criteria.forEach { criterion ->
+                                if (criterion.descriptors.isNotEmpty()) addView(descriptorBlock(criterion))
+                            }
                         }
                     }
                 })
@@ -835,6 +863,140 @@ class MainActivity : Activity() {
             .show()
         dialog.window?.setBackgroundDrawable(cardSurface())
         dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(ui.primary)
+    }
+
+    /** Construit la vue du tableau Profil notes pour le Grand Oral. */
+    private fun addProfileGuideView(container: LinearLayout) {
+        val guide = project.grandOralProfileGuide ?: return
+
+        // Fallback texte brut si le parsing structuré a échoué
+        if (guide.rawFallback != null) {
+            container.addView(TextView(this).apply {
+                text = "Contenu de la feuille Profil notes :"
+                textSize = 14f
+                setTextColor(ui.primary)
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setPadding(0, dp(4), 0, dp(8))
+            })
+            // Grouper par ligne pour un affichage plus lisible
+            val lines = guide.rawFallback.split("\n").filter { it.isNotBlank() }
+            lines.forEach { line ->
+                container.addView(TextView(this).apply {
+                    text = line
+                    textSize = 12f
+                    setTextColor(ui.muted)
+                    setPadding(0, dp(2), 0, dp(2))
+                })
+            }
+            return
+        }
+
+        if (guide.rows.isEmpty()) return
+
+        val levelColors = mapOf(
+            ProfileLevel.VERY_SATISFACTORY to ui.success,
+            ProfileLevel.SATISFACTORY to ui.primary,
+            ProfileLevel.UNSATISFACTORY to ui.warning,
+            ProfileLevel.VERY_UNSATISFACTORY to ui.danger,
+            ProfileLevel.UNKNOWN to ui.muted,
+        )
+
+        // Légende
+        container.addView(TextView(this).apply {
+            text = "TS = Très satisfaisant   S = Satisfaisant   I = Insatisfaisant   TI = Très insatisfaisant"
+            textSize = 12f
+            setTextColor(ui.muted)
+            setPadding(0, 0, 0, dp(12))
+        })
+
+        // Ligne d'en-tête du tableau
+        container.addView(profileGuideHeaderRow())
+
+        // Lignes de profils
+        guide.rows.forEach { row ->
+            container.addView(profileGuideDataRow(row, levelColors))
+        }
+    }
+
+    private fun profileGuideHeaderRow(): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(4), 0, dp(6))
+            val headers = listOf("Oral", "Parole", "Conn.", "Inter.", "Arg.", "Note")
+            headers.forEach { header ->
+                addView(TextView(this@MainActivity).apply {
+                    text = header
+                    textSize = 11f
+                    setTextColor(ui.muted)
+                    setTypeface(null, android.graphics.Typeface.BOLD)
+                    gravity = Gravity.CENTER
+                    setPadding(dp(2), 0, dp(2), 0)
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
+    }
+
+    private fun profileGuideDataRow(
+        row: GrandOralProfileRow,
+        levelColors: Map<ProfileLevel, Int>,
+    ): View {
+        val levels = listOf(
+            row.oralQuality to "O",
+            row.continuousSpeech to "P",
+            row.knowledgeQuality to "C",
+            row.interactionQuality to "I",
+            row.argumentationQuality to "A",
+        )
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = cardSurface()
+            setPadding(dp(6), dp(8), dp(6), dp(8))
+            levels.forEach { (level, _) ->
+                addView(profileLevelBadge(level, levelColors))
+            }
+            addView(TextView(this@MainActivity).apply {
+                text = row.possibleGrade
+                textSize = 12f
+                setTextColor(ui.text)
+                gravity = Gravity.CENTER
+                setTypeface(null, android.graphics.Typeface.BOLD)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }.also {
+            it.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { setMargins(0, 0, 0, dp(5)) }
+        }
+    }
+
+    private fun profileLevelBadge(level: ProfileLevel, colors: Map<ProfileLevel, Int>): View {
+        val color = colors[level] ?: ui.muted
+        return TextView(this).apply {
+            text = level.code
+            textSize = 11f
+            setTextColor(if (level == ProfileLevel.VERY_SATISFACTORY || level == ProfileLevel.VERY_UNSATISFACTORY) Color.WHITE else color)
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                setColor(
+                    when (level) {
+                        ProfileLevel.VERY_SATISFACTORY -> color
+                        ProfileLevel.VERY_UNSATISFACTORY -> color
+                        else -> Color.TRANSPARENT
+                    }
+                )
+                cornerRadius = dp(4).toFloat()
+                setStroke(
+                    if (level == ProfileLevel.SATISFACTORY || level == ProfileLevel.UNSATISFACTORY) dp(1) else 0,
+                    color
+                )
+            }
+            setPadding(dp(4), dp(3), dp(4), dp(3))
+        }.also {
+            it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(dp(2), 0, dp(2), 0)
+            }
+        }
     }
 
     private fun descriptorBlock(criterion: Criterion): View {
@@ -847,17 +1009,22 @@ class MainActivity : Activity() {
                 setTextColor(ui.text)
                 setTypeface(null, android.graphics.Typeface.BOLD)
             })
-            listOf(0, 1, 2, 3).forEach { level ->
-                val description = criterion.descriptors[level].orEmpty()
-                if (description.isNotBlank()) {
-                    addView(TextView(this@MainActivity).apply {
-                        text = "$level - $description"
-                        textSize = 14f
-                        setTextColor(ui.muted)
-                        setPadding(0, dp(3), 0, 0)
-                    })
+            criterion.descriptors.entries
+                .sortedBy { it.key }
+                .forEach { (level, description) ->
+                    if (description.isNotBlank()) {
+                        val prefix = when {
+                            level in 0..3 -> "$level - "
+                            else -> ""
+                        }
+                        addView(TextView(this@MainActivity).apply {
+                            text = "$prefix$description"
+                            textSize = 14f
+                            setTextColor(ui.muted)
+                            setPadding(0, dp(3), 0, 0)
+                        })
+                    }
                 }
-            }
         }
     }
 

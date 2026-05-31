@@ -20,12 +20,14 @@ object XlsxGridExporter {
         val entries = readZipEntries(template)
         val sheetPath = when (project.gridKind) {
             GridKind.ETLV -> "xl/worksheets/sheet1.xml"
+            GridKind.GRAND_ORAL_2I2D -> "xl/worksheets/sheet1.xml"
             else -> "xl/worksheets/sheet2.xml"
         }
         val sheet = entries[sheetPath]?.toString(Charsets.UTF_8)
             ?: throw IllegalArgumentException("Feuille export introuvable")
         entries[sheetPath] = when (project.gridKind) {
             GridKind.ETLV -> fillEtlvSheet(sheet, project, candidateLabel, grades)
+            GridKind.GRAND_ORAL_2I2D -> fillGoSheet(sheet, project, candidateLabel, grades)
             else -> fillEpSheet(sheet, project, candidateLabel, grades)
         }.toByteArray(Charsets.UTF_8)
         prepareWorkbookForRecalculation(entries)
@@ -82,6 +84,30 @@ object XlsxGridExporter {
                 else -> "H"
             }
             xml = upsertCell(xml, "$col$row", "X", text = true)
+        }
+        return xml
+    }
+
+    private fun fillGoSheet(
+        sheet: String,
+        project: TpProject,
+        candidateLabel: String,
+        grades: Map<String, Int>,
+    ): String {
+        var xml = sheet
+        val levelColumns = project.gridLevelColumns
+        if (levelColumns.isEmpty()) return xml
+
+        project.criteria.forEach { criterion ->
+            val row = criterion.rowNumber() ?: return@forEach
+            val level = grades[criterion.id] ?: return@forEach
+            if (level < 0) return@forEach  // NE = pas de croix
+            val col = levelColumns[level] ?: return@forEach
+            // Effacer les autres colonnes de niveaux sur cette ligne
+            levelColumns.values.forEach { otherCol ->
+                if (otherCol != col) xml = upsertCell(xml, "$otherCol$row", "")
+            }
+            xml = upsertCell(xml, "$col$row", "x", text = true)
         }
         return xml
     }
