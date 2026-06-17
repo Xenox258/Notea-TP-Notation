@@ -58,4 +58,5 @@ android {
 
 dependencies {
     testImplementation(kotlin("test"))
+    testImplementation("org.json:json:20250517")
 }

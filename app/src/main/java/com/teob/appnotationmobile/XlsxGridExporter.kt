@@ -95,19 +95,22 @@ object XlsxGridExporter {
         grades: Map<String, Int>,
     ): String {
         var xml = sheet
+        xml = upsertCell(xml, "C22", exportDateLabel(), text = true)
+        xml = upsertCell(xml, "B24", candidateLabel, text = true)
         val levelColumns = project.gridLevelColumns
         if (levelColumns.isEmpty()) return xml
 
         project.criteria.forEach { criterion ->
-            val row = criterion.rowNumber() ?: return@forEach
+            val descriptorRow = criterion.rowNumber() ?: return@forEach
+            val inputRow = descriptorRow + 1
             val level = grades[criterion.id] ?: return@forEach
             if (level < 0) return@forEach  // NE = pas de croix
             val col = levelColumns[level] ?: return@forEach
             // Effacer les autres colonnes de niveaux sur cette ligne
             levelColumns.values.forEach { otherCol ->
-                if (otherCol != col) xml = upsertCell(xml, "$otherCol$row", "")
+                if (otherCol != col) xml = upsertCell(xml, "$otherCol$inputRow", "")
             }
-            xml = upsertCell(xml, "$col$row", "x", text = true)
+            xml = upsertCell(xml, "$col$inputRow", "x", text = true)
         }
         return xml
     }

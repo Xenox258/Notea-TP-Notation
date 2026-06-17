@@ -207,8 +207,10 @@ object ProjectStore {
         return (0 until length()).mapNotNull { index ->
             val obj = getJSONObject(index)
             val name = obj.optString("name").ifBlank { "Feuille ${index + 1}" }
-            val guide = obj.optJSONArray("guide").toProfileGuide() ?: return@mapNotNull null
-            GrandOralInfoSheet(name, guide, obj.optString("imageBase64"))
+            val imageBase64 = obj.optString("imageBase64")
+            val guide = obj.optJSONArray("guide").toProfileGuide()
+                ?: if (imageBase64.isNotBlank()) GrandOralProfileGuide(emptyList()) else return@mapNotNull null
+            GrandOralInfoSheet(name, guide, imageBase64)
         }
     }
 }
