@@ -14,6 +14,8 @@ data class TpProject(
     var gridLevelColumns: Map<Int, String> = emptyMap(),
     /** Guide des profils candidats (2e feuille du Grand Oral). */
     var grandOralProfileGuide: GrandOralProfileGuide? = null,
+    /** Onglets consultables depuis l'icône info pour le Grand Oral. */
+    var grandOralInfoSheets: List<GrandOralInfoSheet> = emptyList(),
 )
 
 fun TpProject.hasContent(): Boolean {
@@ -46,6 +48,7 @@ data class GridImport(
     val kind: String,
     val levelColumns: Map<Int, String> = emptyMap(),
     val profileGuide: GrandOralProfileGuide? = null,
+    val infoSheets: List<GrandOralInfoSheet> = emptyList(),
 )
 
 object GridKind {
@@ -99,4 +102,34 @@ data class GrandOralProfileGuide(
     val rawFallback: String? = null,
 ) {
     val isStructured: Boolean get() = rawFallback == null && rows.isNotEmpty()
+}
+
+data class GrandOralInfoSheet(
+    val name: String,
+    val guide: GrandOralProfileGuide,
+    val imageBase64: String = "",
+)
+
+sealed interface InfoSheetDecision {
+    data class Open(val sheet: GrandOralInfoSheet) : InfoSheetDecision
+    data class Ask(val sheets: List<GrandOralInfoSheet>) : InfoSheetDecision
+    data object None : InfoSheetDecision
+}
+
+object InfoSheetSelection {
+    fun decide(sheets: List<GrandOralInfoSheet>): InfoSheetDecision {
+        val available = sheets.filter {
+            it.guide.rows.isNotEmpty() || !it.guide.rawFallback.isNullOrBlank() || it.imageBase64.isNotBlank()
+        }
+        if (available.isEmpty()) return InfoSheetDecision.None
+
+        val profilNotes = available.firstOrNull { normalizeCellText(it.name) == "profil notes" }
+        if (profilNotes != null) return InfoSheetDecision.Open(profilNotes)
+
+        return if (available.size == 1) {
+            InfoSheetDecision.Open(available.first())
+        } else {
+            InfoSheetDecision.Ask(available)
+        }
+    }
 }

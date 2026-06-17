@@ -55,6 +55,8 @@ object ProjectStore {
     }
 
     private fun parseProject(json: JSONObject): TpProject {
+        val profileGuide = json.optJSONArray("grandOralProfileGuide")?.toProfileGuide()
+        val infoSheets = json.optJSONArray("grandOralInfoSheets").toInfoSheets()
         return TpProject(
             id = json.optString("id").ifBlank { "tp-${System.currentTimeMillis()}" },
             name = json.optString("name"),
@@ -74,7 +76,10 @@ object ProjectStore {
             gridKind = json.optString("gridKind", GridKind.EP_2I2D),
             gridTemplateBase64 = json.optString("gridTemplateBase64"),
             gridLevelColumns = json.optJSONObject("gridLevelColumns").toIntStringMap(),
-            grandOralProfileGuide = json.optJSONArray("grandOralProfileGuide")?.toProfileGuide(),
+            grandOralProfileGuide = profileGuide,
+            grandOralInfoSheets = infoSheets.ifEmpty {
+                profileGuide?.let { listOf(GrandOralInfoSheet("Profil Notes", it)) }.orEmpty()
+            },
         )
     }
 
@@ -115,6 +120,15 @@ object ProjectStore {
                     })
                 }
             } ?: JSONArray())
+            .put(
+                "grandOralInfoSheets",
+                JSONArray(grandOralInfoSheets.map { sheet ->
+                    JSONObject()
+                        .put("name", sheet.name)
+                        .put("guide", sheet.guide.toJsonArray())
+                        .put("imageBase64", sheet.imageBase64)
+                }),
+            )
     }
 
     private fun JSONObject?.toGradeMap(): MutableMap<String, MutableMap<String, Int>> {
@@ -170,5 +184,31 @@ object ProjectStore {
             )
         }
         return GrandOralProfileGuide(rows)
+    }
+
+    private fun GrandOralProfileGuide.toJsonArray(): JSONArray {
+        return if (rawFallback != null) {
+            JSONArray(listOf(JSONObject().put("rawFallback", rawFallback)))
+        } else {
+            JSONArray(rows.map { row ->
+                JSONObject()
+                    .put("oralQuality", row.oralQuality.code)
+                    .put("continuousSpeech", row.continuousSpeech.code)
+                    .put("knowledgeQuality", row.knowledgeQuality.code)
+                    .put("interactionQuality", row.interactionQuality.code)
+                    .put("argumentationQuality", row.argumentationQuality.code)
+                    .put("possibleGrade", row.possibleGrade)
+            })
+        }
+    }
+
+    private fun JSONArray?.toInfoSheets(): List<GrandOralInfoSheet> {
+        if (this == null || length() == 0) return emptyList()
+        return (0 until length()).mapNotNull { index ->
+            val obj = getJSONObject(index)
+            val name = obj.optString("name").ifBlank { "Feuille ${index + 1}" }
+            val guide = obj.optJSONArray("guide").toProfileGuide() ?: return@mapNotNull null
+            GrandOralInfoSheet(name, guide, obj.optString("imageBase64"))
+        }
     }
 }

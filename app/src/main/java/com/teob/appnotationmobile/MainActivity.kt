@@ -705,6 +705,7 @@ class MainActivity : Activity() {
         project.gridKind = grid.kind
         project.gridLevelColumns = grid.levelColumns
         project.grandOralProfileGuide = grid.profileGuide
+        project.grandOralInfoSheets = grid.infoSheets
         project.gridTemplateBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
         android.util.Log.d("InfoDialog", "applyGrid: kind=${grid.kind}, profileGuide=${grid.profileGuide != null}, rows=${grid.profileGuide?.rows?.size}, fallback=${grid.profileGuide?.rawFallback?.length}")
     }
@@ -770,7 +771,7 @@ class MainActivity : Activity() {
     }
 
     private fun hasDescriptors(): Boolean {
-        if (project.gridKind == GridKind.GRAND_ORAL_2I2D && project.grandOralProfileGuide != null) return true
+        if (project.gridKind == GridKind.GRAND_ORAL_2I2D && currentGrandOralInfoSheets().isNotEmpty()) return true
         return project.criteria.any { it.descriptors.isNotEmpty() }
     }
 
@@ -816,19 +817,22 @@ class MainActivity : Activity() {
             return
         }
         val gridKind = project.gridKind
-        val guide = project.grandOralProfileGuide
-        val isGrandOral = gridKind == GridKind.GRAND_ORAL_2I2D && guide != null
+        val infoSheets = currentGrandOralInfoSheets()
+        if (gridKind == GridKind.GRAND_ORAL_2I2D && infoSheets.isNotEmpty()) {
+            when (val decision = InfoSheetSelection.decide(infoSheets)) {
+                is InfoSheetDecision.Open -> showGrandOralInfoSheet(decision.sheet)
+                is InfoSheetDecision.Ask -> showGrandOralInfoSheetPicker(decision.sheets)
+                InfoSheetDecision.None -> toast("Aucun contenu trouvé dans les feuilles d'information.")
+            }
+            return
+        }
 
         android.util.Log.d("InfoDialog", "gridKind=$gridKind")
-        android.util.Log.d("InfoDialog", "hasGrandOralProfileGuide=${guide != null}")
-        android.util.Log.d("InfoDialog", "profileRows=${guide?.rows?.size}")
-        android.util.Log.d("InfoDialog", "rawFallbackLength=${guide?.rawFallback?.length}")
-        android.util.Log.d("InfoDialog", "isGrandOral=$isGrandOral")
         android.util.Log.d("InfoDialog", "criteriaCount=${project.criteria.size}")
 
         val dialog = AlertDialog.Builder(this)
             .setCustomTitle(TextView(this).apply {
-                text = if (isGrandOral) "Profil notes — Grand oral" else "Descripteurs des compétences"
+                text = "Descripteurs des compétences"
                 textSize = 20f
                 setTextColor(ui.text)
                 setTypeface(null, android.graphics.Typeface.BOLD)
@@ -841,20 +845,16 @@ class MainActivity : Activity() {
                     orientation = LinearLayout.VERTICAL
                     val padding = dp(18)
                     setPadding(padding, dp(12), padding, dp(4))
-                    if (isGrandOral) {
-                        addProfileGuideView(this)
-                    } else {
-                        groupedCriteria().forEach { (skill, criteria) ->
-                            addView(TextView(this@MainActivity).apply {
-                                text = skill
-                                textSize = 18f
-                                setTextColor(ui.primary)
-                                setTypeface(null, android.graphics.Typeface.BOLD)
-                                setPadding(0, dp(10), 0, dp(6))
-                            })
-                            criteria.forEach { criterion ->
-                                if (criterion.descriptors.isNotEmpty()) addView(descriptorBlock(criterion))
-                            }
+                    groupedCriteria().forEach { (skill, criteria) ->
+                        addView(TextView(this@MainActivity).apply {
+                            text = skill
+                            textSize = 18f
+                            setTextColor(ui.primary)
+                            setTypeface(null, android.graphics.Typeface.BOLD)
+                            setPadding(0, dp(10), 0, dp(6))
+                        })
+                        criteria.forEach { criterion ->
+                            if (criterion.descriptors.isNotEmpty()) addView(descriptorBlock(criterion))
                         }
                     }
                 })
@@ -865,10 +865,80 @@ class MainActivity : Activity() {
         dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(ui.primary)
     }
 
-    /** Construit la vue du tableau Profil notes pour le Grand Oral. */
-    private fun addProfileGuideView(container: LinearLayout) {
-        val guide = project.grandOralProfileGuide ?: return
+    private fun currentGrandOralInfoSheets(): List<GrandOralInfoSheet> {
+        if (project.gridKind != GridKind.GRAND_ORAL_2I2D) return emptyList()
+        return project.grandOralInfoSheets.ifEmpty {
+            project.grandOralProfileGuide?.let { listOf(GrandOralInfoSheet("Profil Notes", it)) }.orEmpty()
+        }
+    }
 
+    private fun showGrandOralInfoSheetPicker(sheets: List<GrandOralInfoSheet>) {
+        AlertDialog.Builder(this)
+            .setTitle("Afficher les infos de quelle feuille ?")
+            .setItems(sheets.map { it.name }.toTypedArray()) { _, index ->
+                sheets.getOrNull(index)?.let { showGrandOralInfoSheet(it) }
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
+            .also { dialog ->
+                dialog.window?.setBackgroundDrawable(cardSurface())
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(ui.primary)
+            }
+    }
+
+    private fun showGrandOralInfoSheet(sheet: GrandOralInfoSheet) {
+        android.util.Log.d("InfoDialog", "showGrandOralInfoSheet=${sheet.name}")
+        android.util.Log.d("InfoDialog", "profileRows=${sheet.guide.rows.size}")
+        android.util.Log.d("InfoDialog", "rawFallbackLength=${sheet.guide.rawFallback?.length}")
+
+        val dialog = AlertDialog.Builder(this)
+            .setCustomTitle(TextView(this).apply {
+                text = "${sheet.name} — Grand oral"
+                textSize = 20f
+                setTextColor(ui.text)
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setPadding(dp(22), dp(18), dp(22), dp(8))
+                background = cardSurface()
+            })
+            .setView(ScrollView(this).apply {
+                background = cardSurface()
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    val padding = dp(18)
+                    setPadding(padding, dp(12), padding, dp(4))
+                    addGrandOralInfoSheetView(this, sheet)
+                })
+            })
+            .setPositiveButton("Fermer", null)
+            .show()
+        dialog.window?.setBackgroundDrawable(cardSurface())
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(ui.primary)
+    }
+
+    private fun addGrandOralInfoSheetView(container: LinearLayout, sheet: GrandOralInfoSheet) {
+        if (sheet.imageBase64.isNotBlank()) {
+            val bytes = Base64.decode(sheet.imageBase64, Base64.DEFAULT)
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            if (bitmap != null) {
+                container.addView(ImageView(this).apply {
+                    setImageBitmap(bitmap)
+                    adjustViewBounds = true
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    setBackgroundColor(Color.WHITE)
+                    setPadding(0, 0, 0, 0)
+                }, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ))
+                return
+            }
+        }
+
+        addProfileGuideView(container, sheet.guide)
+    }
+
+    /** Construit la vue du tableau Profil notes pour le Grand Oral. */
+    private fun addProfileGuideView(container: LinearLayout, guide: GrandOralProfileGuide) {
         // Fallback texte brut si le parsing structuré a échoué
         if (guide.rawFallback != null) {
             container.addView(TextView(this).apply {
@@ -1876,4 +1946,3 @@ class MainActivity : Activity() {
         private const val REQUEST_EXPORT_ALL_GRIDS = 13
     }
 }
-

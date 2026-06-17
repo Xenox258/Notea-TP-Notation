@@ -6,6 +6,7 @@ import org.xmlpull.v1.XmlPullParser
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.util.Base64
 import java.util.zip.ZipInputStream
 
 object XlsxGridParser {
@@ -279,10 +280,16 @@ object XlsxGridParser {
             )
         }
 
-        // 4. Lire la deuxième feuille (profil notes)
+        // 4. Lire les feuilles d'information secondaires
         Log.d(TAG, "GO : mainSheetName=$mainSheetName, sheets=${sheets.keys}")
-        val profileGuide = parseGrandOralProfileGuide(entries, sheets, sharedStrings, mainSheetName)
-        Log.d(TAG, "GO : profileGuide=${profileGuide != null}, rows=${profileGuide?.rows?.size}, fallback=${profileGuide?.rawFallback?.length}")
+        val infoSheets = parseGrandOralInfoSheets(entries, sheets, sharedStrings, mainSheetName)
+        val profileGuide = when (val decision = InfoSheetSelection.decide(infoSheets)) {
+            is InfoSheetDecision.Open -> decision.sheet.guide
+            is InfoSheetDecision.Ask -> infoSheets.firstOrNull { normalizeCellText(it.name) == "profil notes" }?.guide
+                ?: infoSheets.firstOrNull()?.guide
+            InfoSheetDecision.None -> null
+        }
+        Log.d(TAG, "GO : infoSheets=${infoSheets.map { it.name }}, profileGuide=${profileGuide != null}, rows=${profileGuide?.rows?.size}, fallback=${profileGuide?.rawFallback?.length}")
 
         // 5. Construire les Criterion
         val criteria = criteriaRows.map { (row, label) ->
@@ -302,7 +309,7 @@ object XlsxGridParser {
         }
 
         Log.d(TAG, "GO : ${criteria.size} critères parsés, profil guide = ${profileGuide?.rows?.size ?: 0} lignes")
-        return GridImport(criteria, GridKind.GRAND_ORAL_2I2D, levelColumns, profileGuide)
+        return GridImport(criteria, GridKind.GRAND_ORAL_2I2D, levelColumns, profileGuide, infoSheets)
     }
 
     /** Colonnes attendues dans le tableau Profil notes (normalisées). */
@@ -315,27 +322,70 @@ object XlsxGridParser {
         "note possible",
     )
 
+    private fun parseGrandOralInfoSheets(
+        entries: Map<String, ByteArray>,
+        sheets: Map<String, String>,
+        sharedStrings: List<String>,
+        mainSheetName: String,
+    ): List<GrandOralInfoSheet> {
+        return sheets.entries
+            .filter { (name, _) -> name != mainSheetName }
+            .mapNotNull { (name, path) ->
+                val guide = parseGrandOralProfileGuide(entries, sharedStrings, name, path)
+                val imageBase64 = findSheetImageBase64(entries, path).orEmpty()
+                if (guide != null || imageBase64.isNotBlank()) {
+                    GrandOralInfoSheet(
+                        name = name,
+                        guide = guide ?: GrandOralProfileGuide(emptyList()),
+                        imageBase64 = imageBase64,
+                    )
+                } else {
+                    null
+                }
+            }
+    }
+
+    private fun findSheetImageBase64(
+        entries: Map<String, ByteArray>,
+        sheetPath: String,
+    ): String? {
+        val sheetRelationshipsPath = relationshipPathFor(sheetPath)
+        val drawingPath = entries[sheetRelationshipsPath]
+            ?.let { workbookRelationships(it) }
+            ?.values
+            ?.firstOrNull { it.contains("drawing", ignoreCase = true) }
+            ?.let { resolveZipPath(sheetPath, it) }
+            ?: return null
+
+        val drawingRelationshipsPath = relationshipPathFor(drawingPath)
+        val imagePath = entries[drawingRelationshipsPath]
+            ?.let { workbookRelationships(it) }
+            ?.values
+            ?.firstOrNull { it.contains("media/", ignoreCase = true) || it.matches(Regex(".*\\.(png|jpg|jpeg)$", RegexOption.IGNORE_CASE)) }
+            ?.let { resolveZipPath(drawingPath, it) }
+            ?: return null
+
+        val imageBytes = entries[imagePath] ?: return null
+        Log.d(TAG, "GO Profil notes : image trouvée $imagePath (${imageBytes.size} octets)")
+        return Base64.getEncoder().encodeToString(imageBytes)
+    }
+
     /**
-     * Parse la deuxième feuille du Grand Oral pour extraire le tableau
+     * Parse une feuille d'information du Grand Oral pour extraire le tableau
      * "Exemples de profils de candidat". Si le parsing structuré échoue,
      * retourne le contenu brut en fallback.
      */
     private fun parseGrandOralProfileGuide(
         entries: Map<String, ByteArray>,
-        sheets: Map<String, String>,
         sharedStrings: List<String>,
-        mainSheetName: String,
+        sheetName: String,
+        sheetPath: String,
     ): GrandOralProfileGuide? {
-        val secondSheetEntry = sheets.entries.firstOrNull { (name, _) -> name != mainSheetName }
-        if (secondSheetEntry == null) {
-            Log.d(TAG, "GO Profil notes : aucune 2e feuille (sheets=${sheets.keys}, main=$mainSheetName)")
-            return null
-        }
-        Log.d(TAG, "GO Profil notes : 2e feuille « ${secondSheetEntry.key} » → ${secondSheetEntry.value}")
-        val secondCells = entries[secondSheetEntry.value]
+        Log.d(TAG, "GO Profil notes : feuille « $sheetName » → $sheetPath")
+        val secondCells = entries[sheetPath]
             ?.let { parseCells(it, sharedStrings) }
         if (secondCells == null) {
-            Log.d(TAG, "GO Profil notes : impossible de parser la 2e feuille (clé=${secondSheetEntry.value} non trouvée dans entries)")
+            Log.d(TAG, "GO Profil notes : impossible de parser la feuille (clé=$sheetPath non trouvée dans entries)")
             return null
         }
 
@@ -345,7 +395,7 @@ object XlsxGridParser {
         }
 
         val nonBlankCount = secondCells.values.count { it.isNotBlank() }
-        Log.d(TAG, "GO Profil notes : « ${secondSheetEntry.key} » → $nonBlankCount cellules non vides")
+        Log.d(TAG, "GO Profil notes : « $sheetName » → $nonBlankCount cellules non vides")
 
         // Grouper par ligne
         val rows = secondCells.entries
@@ -683,6 +733,31 @@ object XlsxGridParser {
             event = parser.next()
         }
         return relationships
+    }
+
+    private fun relationshipPathFor(path: String): String {
+        val slash = path.lastIndexOf('/')
+        val directory = path.substring(0, slash)
+        val file = path.substring(slash + 1)
+        return "$directory/_rels/$file.rels"
+    }
+
+    private fun resolveZipPath(sourcePath: String, target: String): String {
+        if (target.startsWith("xl/")) return target
+        val cleanedTarget = target.removePrefix("/")
+        if (!cleanedTarget.startsWith("../")) {
+            return "${sourcePath.substringBeforeLast('/')}/$cleanedTarget"
+        }
+
+        val parts = sourcePath.substringBeforeLast('/').split('/').toMutableList()
+        cleanedTarget.split('/').forEach { part ->
+            when (part) {
+                ".." -> if (parts.isNotEmpty()) parts.removeAt(parts.lastIndex)
+                ".", "" -> Unit
+                else -> parts += part
+            }
+        }
+        return parts.joinToString("/")
     }
 
     private fun parseDescriptors(
