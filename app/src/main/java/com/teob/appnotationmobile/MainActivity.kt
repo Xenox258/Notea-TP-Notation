@@ -12,7 +12,9 @@ import android.os.Bundle
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
 import android.provider.OpenableColumns
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.util.Base64
 import android.util.TypedValue
 import android.view.Gravity
@@ -522,7 +524,8 @@ class MainActivity : Activity() {
     // Écran de notation d'un élève ou d'un binôme, avec score recalculé à chaque saisie.
     private fun showStudentGrade(student: Student) {
         selectedStudentId = student.id
-        val grades = project.grades.getOrPut(gradeOwnerId(student.id)) { mutableMapOf() }
+        val ownerId = gradeOwnerId(student.id)
+        val grades = project.grades.getOrPut(ownerId) { mutableMapOf() }
         val root = verticalRoot {
                 addView(headerRow(
                     title = gradeTitle(student),
@@ -551,9 +554,9 @@ class MainActivity : Activity() {
                 ))
 
                 val scoreText = TextView(this@MainActivity).apply {
-                    text = "Note: ${scoreLabel(student.id)}"
+                    text = "Note calculée: ${calculatedScoreLabel(student.id)}"
                     textSize = scaledGradeTextSize(22f)
-                    setTextColor(scoreColor(student.id))
+                    setTextColor(calculatedScoreColor(student.id))
                     setTypeface(null, android.graphics.Typeface.BOLD)
                     gravity = Gravity.CENTER
                     background = cardSurface()
@@ -562,11 +565,18 @@ class MainActivity : Activity() {
                 addView(scoreText, matchWrap().apply {
                     setMargins(0, dp(12), 0, dp(12))
                 })
+                val juryNoteView = juryNoteEditor(student.id, ownerId) {
+                    scoreText.text = "Note calculée: ${calculatedScoreLabel(selectedStudentId)}"
+                    scoreText.setTextColor(calculatedScoreColor(selectedStudentId))
+                }
+                addView(juryNoteView)
 
                 groupedCriteria().forEach { (skill, criteria) ->
                     addView(skillHeader(skill))
                     criteria.forEach { criterion ->
-                        addView(criterionEditor(criterion, grades, scoreText))
+                        addView(criterionEditor(criterion, grades, scoreText) {
+                            juryNoteView.visibility = if (shouldShowJuryNote(student.id)) View.VISIBLE else View.GONE
+                        })
                     }
                 }
             }
@@ -577,6 +587,7 @@ class MainActivity : Activity() {
         criterion: Criterion,
         grades: MutableMap<String, Int>,
         scoreText: TextView,
+        onScoreChanged: () -> Unit,
     ): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -588,34 +599,92 @@ class MainActivity : Activity() {
                 setTextColor(ui.text)
                 setPadding(0, dp(3), 0, dp(8))
             })
-            addView(row {
-                val options = listOf(-1 to "NE", 0 to "0", 1 to "1", 2 to "2", 3 to "3")
-                val buttons = mutableListOf<Pair<Int, Button>>()
-                fun refreshButtons() {
-                    buttons.forEach { (value, button) ->
-                        val selected = grades[criterion.id] == value
-                        button.setTextColor(if (selected) ui.iconOnAccent else ui.text)
-                        button.background = if (selected) accentSurface() else glassSurface()
-                    }
+            val buttons = mutableListOf<Pair<Int, Button>>()
+            fun refreshButtons() {
+                buttons.forEach { (value, button) ->
+                    val selected = grades[criterion.id] == value
+                    button.setTextColor(if (selected) ui.iconOnAccent else ui.text)
+                    button.background = if (selected) accentSurface() else glassSurface()
                 }
-                options.forEach { (value, text) ->
-                    val button = scoreButton(text, grades[criterion.id] == value) {
-                        grades[criterion.id] = value
-                        saveCurrentProject()
-                        scoreText.text = "Note: ${scoreLabel(selectedStudentId)}"
-                        scoreText.setTextColor(scoreColor(selectedStudentId))
-                        refreshButtons()
+            }
+            val optionRows = gradeOptionRowsFor(project.gridKind)
+            optionRows.forEachIndexed { rowIndex, optionRow ->
+                addView(row {
+                    optionRow.forEach { option ->
+                        val button = scoreButton(option.label, grades[criterion.id] == option.value) {
+                            grades[criterion.id] = option.value
+                            saveCurrentProject()
+                            scoreText.text = "Note calculée: ${calculatedScoreLabel(selectedStudentId)}"
+                            scoreText.setTextColor(calculatedScoreColor(selectedStudentId))
+                            refreshButtons()
+                            onScoreChanged()
+                        }
+                        buttons += option.value to button
+                        addView(button)
                     }
-                    buttons += value to button
-                    addView(button)
-                }
-            })
+                }, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    setMargins(0, 0, 0, dp(gradeOptionRowBottomMarginDp(project.gridKind, rowIndex, optionRows.size)))
+                })
+            }
         }.also {
             it.layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { setMargins(0, 0, 0, dp(10)) }
         }
+    }
+
+    private fun juryNoteEditor(studentId: String, ownerId: String, onJuryNoteChanged: () -> Unit): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = if (shouldShowJuryNote(studentId)) View.VISIBLE else View.GONE
+            background = cardSurface()
+            setPadding(dp(16), dp(14), dp(16), dp(16))
+            addView(TextView(this@MainActivity).apply {
+                text = "Note du jury"
+                textSize = scaledGradeTextSize(16f)
+                setTextColor(ui.text)
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setPadding(0, 0, 0, dp(8))
+            })
+            addView(EditText(this@MainActivity).apply {
+                setText(project.juryNotes[ownerId].orEmpty())
+                hint = "Note sur 20"
+                textSize = scaledGradeTextSize(16f)
+                setSingleLine(true)
+                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                setTextColor(ui.text)
+                setHintTextColor(ui.muted)
+                background = glassSurface()
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                    override fun afterTextChanged(s: Editable?) {
+                        val value = s?.toString().orEmpty().trim()
+                        if (value.isBlank()) {
+                            project.juryNotes.remove(ownerId)
+                        } else {
+                            project.juryNotes[ownerId] = value
+                        }
+                        saveCurrentProject()
+                        onJuryNoteChanged()
+                    }
+                })
+            }, matchWrap())
+        }.also {
+            it.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { setMargins(0, 0, 0, dp(10)) }
+        }
+    }
+
+    private fun shouldShowJuryNote(studentId: String): Boolean {
+        return project.gridKind == GridKind.GRAND_ORAL_2I2D && scoreForStudent(studentId) != null
     }
 
     private fun studentRow(student: Student): View {
@@ -761,6 +830,20 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun calculatedScoreLabel(studentId: String?): String {
+        val score = studentId?.let { computedScoreForStudent(project, it) }
+        return score?.let { "${gradeFormat.format(it)} / 20" } ?: "A noter"
+    }
+
+    private fun calculatedScoreColor(studentId: String?): Int {
+        val score = studentId?.let { computedScoreForStudent(project, it) } ?: return ui.muted
+        return when {
+            score < 8.0 -> ui.danger
+            score < 13.0 -> ui.warning
+            else -> ui.success
+        }
+    }
+
     private fun scoreColor(score: Double?): Int {
         score ?: return ui.muted
         return when {
@@ -802,7 +885,7 @@ class MainActivity : Activity() {
                     setPadding(0, dp(4), 0, dp(6))
                 })
                 groups.forEach { group ->
-                    val score = computeScore(project, gradesForStudent(project, group.first().id))
+                    val score = displayScoreForStudent(project, group.first().id)
                     val label = group.joinToString(" + ") { familyName(it.name) }
                     addView(recapLine(label, scoreLabel(score), scoreColor(score)))
                 }
@@ -1165,7 +1248,7 @@ class MainActivity : Activity() {
         if (storedProject != null) project = storedProject
         val template = Base64.decode(project.gridTemplateBase64, Base64.DEFAULT)
         val grades = project.grades[pending.ownerId] ?: emptyMap()
-        val output = XlsxGridExporter.fill(project, template, pending.label, grades)
+        val output = XlsxGridExporter.fill(project, template, pending.label, grades, project.juryNotes[pending.ownerId])
         contentResolver.openOutputStream(uri).useRequired { it.write(output) }
         toast("Grille exportée")
     }
@@ -1192,7 +1275,7 @@ class MainActivity : Activity() {
             val label = exportGroupLabel(group)
             val ownerId = gradeOwnerId(storedProject, group.first().id)
             val grades = storedProject.grades[ownerId] ?: emptyMap()
-            val output = XlsxGridExporter.fill(storedProject, template, label, grades)
+            val output = XlsxGridExporter.fill(storedProject, template, label, grades, storedProject.juryNotes[ownerId])
             val fileUri = DocumentsContract.createDocument(
                 contentResolver,
                 exportsDirectory,
@@ -1206,7 +1289,7 @@ class MainActivity : Activity() {
 
     private fun gradedExportGroups(targetProject: TpProject): List<List<Student>> {
         return pairGroups(targetProject).filter { group ->
-            computeScore(targetProject, gradesForStudent(targetProject, group.first().id)) != null
+            displayScoreForStudent(targetProject, group.first().id) != null
         }
     }
 
@@ -1460,7 +1543,7 @@ class MainActivity : Activity() {
     private fun gradedCount(): Int = gradedCount(project)
 
     private fun scoreForStudent(studentId: String): Double? {
-        return computeScore(project, gradesForStudent(project, studentId))
+        return displayScoreForStudent(project, studentId)
     }
 
     private fun scoreLabel(score: Double?): String {
@@ -1474,7 +1557,7 @@ class MainActivity : Activity() {
         val groups = pairGroups(project)
         val lines = groups.joinToString("\n") { group ->
             val label = group.joinToString(" + ") { familyName(it.name) }
-            val score = computeScore(project, gradesForStudent(project, group.first().id))
+            val score = displayScoreForStudent(project, group.first().id)
                 ?.let { "${gradeFormat.format(it)} / 20" } ?: "A noter"
             "$label: $score"
         }
@@ -1512,20 +1595,29 @@ class MainActivity : Activity() {
         val firstGrades = project.grades[firstId]
         val secondGrades = project.grades[secondId]
         val sharedGrades = firstGrades ?: secondGrades
+        val sharedJuryNote = project.juryNotes[firstId] ?: project.juryNotes[secondId]
         if (sharedGrades != null) {
             project.grades[ownerId] = sharedGrades.toMutableMap()
         }
+        if (sharedJuryNote != null) project.juryNotes[ownerId] = sharedJuryNote
         if (ownerId != firstId) project.grades.remove(firstId)
         if (ownerId != secondId) project.grades.remove(secondId)
+        if (ownerId != firstId) project.juryNotes.remove(firstId)
+        if (ownerId != secondId) project.juryNotes.remove(secondId)
     }
 
     private fun unlinkStudent(studentId: String) {
         val partnerId = project.pairings[studentId] ?: return
         val ownerId = canonicalPairId(studentId, partnerId)
         val sharedGrades = project.grades[ownerId]?.toMutableMap()
+        val sharedJuryNote = project.juryNotes[ownerId]
         if (sharedGrades != null) {
             project.grades.putIfAbsent(studentId, sharedGrades.toMutableMap())
             project.grades.putIfAbsent(partnerId, sharedGrades.toMutableMap())
+        }
+        if (sharedJuryNote != null) {
+            project.juryNotes.putIfAbsent(studentId, sharedJuryNote)
+            project.juryNotes.putIfAbsent(partnerId, sharedJuryNote)
         }
         project.pairings.remove(studentId)
         project.pairings.remove(partnerId)
@@ -1542,6 +1634,8 @@ class MainActivity : Activity() {
         project.students = project.students.filterNot { it.id == student.id }
         project.grades.remove(student.id)
         pairOwnerId?.let { project.grades.remove(it) }
+        project.juryNotes.remove(student.id)
+        pairOwnerId?.let { project.juryNotes.remove(it) }
         project.pairings.remove(student.id)
         project.pairings.entries.removeAll { it.value == student.id }
         if (project.students.size < 2) {

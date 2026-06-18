@@ -6,6 +6,7 @@ data class TpProject(
     var students: List<Student> = emptyList(),
     var criteria: List<Criterion> = emptyList(),
     var grades: MutableMap<String, MutableMap<String, Int>> = mutableMapOf(),
+    var juryNotes: MutableMap<String, String> = mutableMapOf(),
     var pairMode: Boolean = false,
     var pairings: MutableMap<String, String> = mutableMapOf(),
     var gridKind: String = GridKind.EP_2I2D,

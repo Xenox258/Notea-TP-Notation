@@ -4,12 +4,12 @@ import java.text.Normalizer
 import java.util.Locale
 
 fun averageScore(project: TpProject): Double? {
-    val scores = scoreGroups(project).mapNotNull { (_, grades) -> computeScore(project, grades) }
+    val scores = pairGroups(project).mapNotNull { group -> displayScoreForStudent(project, group.first().id) }
     return scores.takeIf { it.isNotEmpty() }?.average()
 }
 
 fun gradedCount(project: TpProject): Int {
-    return scoreGroups(project).count { (_, grades) -> computeScore(project, grades) != null }
+    return pairGroups(project).count { group -> displayScoreForStudent(project, group.first().id) != null }
 }
 
 fun gradesForStudent(project: TpProject, studentId: String): Map<String, Int> {
@@ -25,6 +25,21 @@ fun gradeOwnerId(project: TpProject, studentId: String): String {
 
 fun scoreGroups(project: TpProject): List<Pair<List<Student>, Map<String, Int>>> {
     return pairGroups(project).map { group -> group to gradesForStudent(project, group.first().id) }
+}
+
+fun displayScoreForStudent(project: TpProject, studentId: String): Double? {
+    val ownerId = gradeOwnerId(project, studentId)
+    return project.juryNotes[ownerId]?.toJuryScore()
+        ?: computeScore(project, gradesForStudent(project, studentId))
+}
+
+fun computedScoreForStudent(project: TpProject, studentId: String): Double? {
+    return computeScore(project, gradesForStudent(project, studentId))
+}
+
+fun String.toJuryScore(): Double? {
+    val value = trim().replace(',', '.').toDoubleOrNull() ?: return null
+    return value.takeIf { it in 0.0..20.0 }
 }
 
 // Construit les groupes affichés et notés : élèves seuls ou binômes selon le mode du TP.

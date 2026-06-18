@@ -71,6 +71,7 @@ object ProjectStore {
                 )
             },
             grades = json.optJSONObject("grades").toGradeMap(),
+            juryNotes = json.optJSONObject("juryNotes").toStringMap(),
             pairMode = json.optBoolean("pairMode", false),
             pairings = json.optJSONObject("pairings").toStringMap(),
             gridKind = json.optString("gridKind", GridKind.EP_2I2D),
@@ -100,6 +101,7 @@ object ProjectStore {
                 }),
             )
             .put("grades", JSONObject(grades.mapValues { JSONObject(it.value as Map<*, *>) }))
+            .put("juryNotes", JSONObject(juryNotes as Map<*, *>))
             .put("pairMode", pairMode)
             .put("pairings", JSONObject(pairings as Map<*, *>))
             .put("gridKind", gridKind)

@@ -77,6 +77,36 @@ class XlsxGridExporterTest {
         assertContains(sheet, """<c r="B24" s="91" t="str"><v>DUPONT Ada</v></c>""")
     }
 
+    @Test
+    fun grandOralWritesJuryNoteToProposedJuryCell() {
+        val project = TpProject(
+            name = "Grand oral",
+            criteria = emptyList(),
+            gridKind = GridKind.GRAND_ORAL_2I2D,
+            gridLevelColumns = mapOf(0 to "E", 1 to "F", 2 to "G", 3 to "H"),
+        )
+
+        val output = XlsxGridExporter.fill(
+            project = project,
+            template = minimalWorkbook(
+                """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <sheetData>
+                    <row r="20"><c r="D20" s="44" t="s"><v>6</v></c><c r="E20" s="95"><v>0</v></c><c r="F20" s="95"/></row>
+                  </sheetData>
+                </worksheet>
+                """.trimIndent(),
+            ),
+            candidateLabel = "DUPONT Ada",
+            grades = emptyMap(),
+            juryNote = "14,5",
+        )
+
+        val sheet = unzip(output)["xl/worksheets/sheet1.xml"]!!.toString(Charsets.UTF_8)
+
+        assertContains(sheet, """<c r="E20" s="95"><v>14.5</v></c>""")
+    }
+
     private fun minimalWorkbook(sheetXml: String): ByteArray {
         return zip(
             mapOf(

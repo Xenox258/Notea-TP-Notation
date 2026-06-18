@@ -16,6 +16,7 @@ object XlsxGridExporter {
         template: ByteArray,
         candidateLabel: String,
         grades: Map<String, Int>,
+        juryNote: String? = null,
     ): ByteArray {
         val entries = readZipEntries(template)
         val sheetPath = when (project.gridKind) {
@@ -27,7 +28,7 @@ object XlsxGridExporter {
             ?: throw IllegalArgumentException("Feuille export introuvable")
         entries[sheetPath] = when (project.gridKind) {
             GridKind.ETLV -> fillEtlvSheet(sheet, project, candidateLabel, grades)
-            GridKind.GRAND_ORAL_2I2D -> fillGoSheet(sheet, project, candidateLabel, grades)
+            GridKind.GRAND_ORAL_2I2D -> fillGoSheet(sheet, project, candidateLabel, grades, juryNote)
             else -> fillEpSheet(sheet, project, candidateLabel, grades)
         }.toByteArray(Charsets.UTF_8)
         prepareWorkbookForRecalculation(entries)
@@ -93,10 +94,14 @@ object XlsxGridExporter {
         project: TpProject,
         candidateLabel: String,
         grades: Map<String, Int>,
+        juryNote: String?,
     ): String {
         var xml = sheet
         xml = upsertCell(xml, "C22", exportDateLabel(), text = true)
         xml = upsertCell(xml, "B24", candidateLabel, text = true)
+        juryNote?.toExcelNumber()?.let { note ->
+            xml = upsertCell(xml, "E20", note)
+        }
         val levelColumns = project.gridLevelColumns
         if (levelColumns.isEmpty()) return xml
 
@@ -113,6 +118,12 @@ object XlsxGridExporter {
             xml = upsertCell(xml, "$col$inputRow", "x", text = true)
         }
         return xml
+    }
+
+    private fun String.toExcelNumber(): String? {
+        val normalized = trim().replace(',', '.')
+        val value = normalized.toDoubleOrNull() ?: return null
+        return if (value in 0.0..20.0) normalized else null
     }
 
     private fun Criterion.rowNumber(): Int? {

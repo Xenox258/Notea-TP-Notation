@@ -37,6 +37,22 @@ class ProjectStoreTest {
         assertTrue(sheet.guide.rows.isEmpty())
     }
 
+    @Test
+    fun keepsJuryNotesWhenLoadingProject() {
+        val project = parseProject(
+            JSONObject()
+                .put("id", "tp-1")
+                .put("name", "Grand oral")
+                .put("students", JSONArray())
+                .put("criteria", JSONArray())
+                .put("grades", JSONObject())
+                .put("gridKind", GridKind.GRAND_ORAL_2I2D)
+                .put("juryNotes", JSONObject().put("student-1", "14,5")),
+        )
+
+        assertEquals("14,5", project.juryNotes["student-1"])
+    }
+
     private fun parseProject(json: JSONObject): TpProject {
         val method = ProjectStore::class.java.getDeclaredMethod("parseProject", JSONObject::class.java)
         method.isAccessible = true
